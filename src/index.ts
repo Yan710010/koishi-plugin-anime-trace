@@ -13,21 +13,14 @@ export const Config: Schema<Config> = Schema.object({
 
 })
 
-export function apply(ctx: Context, config: Config) {
-  ctx.command("以图识人.动画 [img:image]", "识别图片中的动画角色")
-    .option("model", "-m <model> 选择模型：1(默认), 2", {type: /^1$|^2$/, fallback: "1"})
-    .action(async ({session, options}, img) => {
-      let model = options.model === "1" ? "anime_model_lovelive" : "pre_stable"
-      await detect(model, img, session)
+export function apply(ctx: Context, _config: Config) {
+  ctx.command("以图识人 [img:image]", "识别图片中的动画角色")
+    .action(async ({ session }, img) => {
+      return await detect(img, session)
     })
 
-  ctx.command("以图识人.gal [img:image]", "识别图片中的galgame角色")
-    .action(async ({session}, img) => {
-      await detect("full_game_model_kira", img, session)
-    })
-
-  async function detect(model: string, img: JSX.ResourceElement, session: Session<never, never, Context>) {
-    let codes = {
+  async function detect(img: JSX.ResourceElement, session: Session<never, never, Context>): Promise<string> {
+    const codes = {
       17701: "图片大小过大",
       17702: "服务器繁忙，请重试",
       17703: "请求参数不正确",
@@ -57,7 +50,7 @@ export function apply(ctx: Context, config: Config) {
       17734: "反馈失败",
       17735: "反馈识别效果成功",
       17736: "验证码错误"
-  }
+    }
 
     let url: string
     if (img) {
@@ -65,32 +58,29 @@ export function apply(ctx: Context, config: Config) {
     } else {
       let element = session.quote?.elements
       if (!element) {
-        await session.send("请在30秒内发送一张图片")
+        const send = await session.send("请在30秒内发送一张图片")
         const msg = await session.prompt(30000)
         if (msg !== undefined) {
           element = h.parse(msg)
         } else {
-          await session.send('超时')
+          return h.quote(send[0]) + '超时'
         }
       }
 
       const image = h.select(element, 'img')
-      if (image.length === 0) await session.send('这看上去不是图片')
+      if (image.length === 0) return h.quote(session.messageId) + '这看上去不是图片';
 
       url = image[0].attrs.src
     }
 
-    session.send(h.quote(session.messageId) + "正在识别中...")
-
-    let imageBuffer = await ctx.http.get(url, {responseType: 'arraybuffer'})
+    let imageBuffer = await ctx.http.get(url, { responseType: 'arraybuffer' })
     let formData = new FormData()
-    formData.append("model", model)
     formData.append("ai_detect", "1")
     formData.append("file", new Blob([imageBuffer]), "image.png")
 
     let res = await ctx.http.post("https://api.animetrace.com/v1/search", formData)
-    if (![200, 17720, 0].includes(res.code)) await session.send(codes[res.code])
-    if (res.data.length === 0 ) await session.send("未识别到角色")
+    if (![200, 17720, 0].includes(res.code)) return h.quote(session.messageId) + codes[res.code]
+    if (res.data.length === 0) return h.quote(session.messageId) + "未识别到角色"
 
     for (let character of res.data) {
       let image = await Jimp.read(imageBuffer)
@@ -98,9 +88,9 @@ export function apply(ctx: Context, config: Config) {
       let width = image.bitmap.width
       let box = character.box
       image.crop({
-        x: box[0] * width, 
-        y: box[1] * height, 
-        w: (box[2] - box[0]) * width, 
+        x: box[0] * width,
+        y: box[1] * height,
+        w: (box[2] - box[0]) * width,
         h: (box[3] - box[1]) * height
       })
       let buffer = await image.getBuffer("image/png")
@@ -108,8 +98,8 @@ export function apply(ctx: Context, config: Config) {
       let result = `<message forward>
 <message>
 <author id="${session.selfId}"/>
-${h.image(buffer, "image/png")}
-${session.username}识别的该角色可能是：
+${h.image(buffer, "image/png")}${res.ai ? "\n此图片可能为AI生成" : ""}
+${session.username}识别的该角色${character.not_confident ? "无法确定，" : ""}可能是：
 </message>`
 
       for (let possibleCharacter of character.character) {
@@ -122,7 +112,7 @@ ${session.username}识别的该角色可能是：
 
       result += `</message>`
 
-      await session.send(result)
+      return result
     }
   }
 
